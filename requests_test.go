@@ -25,17 +25,13 @@ func (t *testEnv) NewClient() *http.Client {
 			DialContext: func(_ context.Context, network, _ string) (net.Conn, error) {
 				return net.Dial(network, t.server.Listener.Addr().String())
 			},
-			Dial: (&net.Dialer{
-				Timeout:   5 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).Dial,
 			TLSHandshakeTimeout: 5 * time.Second,
 			IdleConnTimeout:     90 * time.Second,
 		},
 		Timeout: 10 * time.Second,
 	}
 }
-func (t *testEnv) NewRequest(endpoint string, body interface{}) (*http.Request, error) {
+func (t *testEnv) NewRequest(ctx context.Context, endpoint string, body interface{}) (*http.Request, error) {
 	t.server = httptest.NewServer(http.HandlerFunc(t.handler))
 
 	fmt.Println("Test server at ", t.server.Listener.Addr().String())
@@ -45,14 +41,13 @@ func (t *testEnv) NewRequest(endpoint string, body interface{}) (*http.Request, 
 		return nil, err
 	}
 
-	// fmt.Println("Request to: ", APIVersion+endpoint)
 	bodyReader := strings.NewReader(string(requestBody))
-	req, err := http.NewRequest("POST", "http://"+t.server.URL+"/"+APIVersion+endpoint, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://"+t.server.URL+"/"+APIVersion+endpoint, bodyReader)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Content-Type", "Application/json")
+	req.Header.Add("Content-Type", "application/json")
 	return req, nil
 
 }
@@ -64,15 +59,20 @@ type tt struct {
 }
 
 //
-// Signing and Auth, veri similar test cases
+// Auth, Sign, Collect, PhoneAuth, PhoneSign tests for v6.0
 //
 
-func TestSignAuthCollect_v5(t *testing.T) {
+func TestSignAuthCollect_v6(t *testing.T) {
 	testFunctions := []*tt{
-		&tt{
+		{
 			name: "Expected: Successful, w/ correct response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				authRsp := Response{} // Empty but valid
+				authRsp := Response{
+					OrderRef:       "131daac9-16c6-4618-beb0-365768f37288",
+					AutoStartToken: "dbbee61c-357b-4fd8-b103-392eed10be7a",
+					QRStartToken:   "67df3917-fa0d-44e5-b327-edcc928297f8",
+					QRStartSecret:  "d28db9a7-4cde-429e-a983-359be676944c",
+				}
 				w.WriteHeader(200)
 				json.NewEncoder(w).Encode(&authRsp)
 			},
@@ -81,7 +81,7 @@ func TestSignAuthCollect_v5(t *testing.T) {
 				assert.NotNil(t, resp)
 			},
 		},
-		&tt{
+		{
 			name: "Expected: Successful, w/ incorrect response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Write(nil) // Empty and invalid
@@ -91,7 +91,7 @@ func TestSignAuthCollect_v5(t *testing.T) {
 				assert.Empty(t, resp)
 			},
 		},
-		&tt{
+		{
 			name: "Expected: Fail, w/ correct response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				errRsp := ErrorResponse{} // Empty but valid
@@ -104,7 +104,7 @@ func TestSignAuthCollect_v5(t *testing.T) {
 				assert.Empty(t, resp)
 			},
 		},
-		&tt{
+		{
 			name: "Expected: Fail, w/ incorrect response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(400)
@@ -116,7 +116,7 @@ func TestSignAuthCollect_v5(t *testing.T) {
 				assert.Empty(t, resp)
 			},
 		},
-		&tt{ // Mostly f or test coverage
+		{ // Mostly for test coverage
 			name: "Expected: Fail, we don't handle 1xx/3xx messages",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(101)
@@ -130,20 +130,26 @@ func TestSignAuthCollect_v5(t *testing.T) {
 	}
 
 	env := &testEnv{}
+	ctx := context.Background()
 
-	// Signing data
-	for _, at := range testFunctions {
-		env.handler = at.handler
-		fmt.Printf("Sign: %s - ", at.name)
-		resp, err := Sign(env, "198001010000", "127.0.0.1", "Hi User", "abc123")
-		at.assert(resp, err)
-	}
-
-	// Authentication self
+	// Auth - v6.0 (no personal number)
 	for _, at := range testFunctions {
 		env.handler = at.handler
 		fmt.Printf("Auth: %s - ", at.name)
-		resp, err := Auth(env, "198001010000", "127.0.0.1")
+		resp, err := Auth(ctx, env, &AuthRequest{
+			EndUserIP: "127.0.0.1",
+		})
+		at.assert(resp, err)
+	}
+
+	// Sign - v6.0 (no personal number)
+	for _, at := range testFunctions {
+		env.handler = at.handler
+		fmt.Printf("Sign: %s - ", at.name)
+		resp, err := Sign(ctx, env, &SignRequest{
+			EndUserIP:       "127.0.0.1",
+			UserVisibleData: "Test signing data",
+		})
 		at.assert(resp, err)
 	}
 
@@ -151,16 +157,62 @@ func TestSignAuthCollect_v5(t *testing.T) {
 	for _, at := range testFunctions {
 		env.handler = at.handler
 		fmt.Printf("Collect: %s - ", at.name)
-		resp, err := Collect(env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
+		resp, err := Collect(ctx, env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
 		at.assert(resp, err)
 	}
 
 	env.server.Close()
 }
 
-func TestCancel_v5(t *testing.T) {
+func TestPhoneAuth_v6(t *testing.T) {
+	env := &testEnv{}
+	ctx := context.Background()
+
+	env.handler = func(w http.ResponseWriter, r *http.Request) {
+		rsp := PhoneResponse{
+			OrderRef: "131daac9-16c6-4618-beb0-365768f37288",
+		}
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(&rsp)
+	}
+
+	resp, err := PhoneAuth(ctx, env, &PhoneAuthRequest{
+		PersonalNumber: "198001010000",
+		CallInitiator:  CallInitiatorUser,
+	})
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "131daac9-16c6-4618-beb0-365768f37288", resp.OrderRef)
+
+	env.server.Close()
+}
+
+func TestPhoneSign_v6(t *testing.T) {
+	env := &testEnv{}
+	ctx := context.Background()
+
+	env.handler = func(w http.ResponseWriter, r *http.Request) {
+		rsp := PhoneResponse{
+			OrderRef: "131daac9-16c6-4618-beb0-365768f37288",
+		}
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(&rsp)
+	}
+
+	resp, err := PhoneSign(ctx, env, &PhoneSignRequest{
+		PersonalNumber:  "198001010000",
+		CallInitiator:   CallInitiatorRP,
+		UserVisibleData: "Sign this document",
+	})
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+
+	env.server.Close()
+}
+
+func TestCancel_v6(t *testing.T) {
 	testFunctions := []*tt{
-		&tt{
+		{
 			name: "Expected: Successful, w/ correct response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				authRsp := Response{} // Empty but valid
@@ -171,7 +223,7 @@ func TestCancel_v5(t *testing.T) {
 				assert.Nil(t, err)
 			},
 		},
-		&tt{
+		{
 			name: "Expected: Successful, w/ incorrect response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Write(nil) // Empty and invalid
@@ -180,7 +232,7 @@ func TestCancel_v5(t *testing.T) {
 				assert.NotNil(t, err)
 			},
 		},
-		&tt{
+		{
 			name: "Expected: Fail, w/ correct response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				errRsp := ErrorResponse{} // Empty but valid
@@ -194,13 +246,84 @@ func TestCancel_v5(t *testing.T) {
 	}
 
 	env := &testEnv{}
+	ctx := context.Background()
 
 	for _, at := range testFunctions {
 		env.handler = at.handler
 		fmt.Printf("Cancel: %s - ", at.name)
-		err := Cancel(env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
+		err := Cancel(ctx, env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
 		at.assert(nil, err)
 	}
+
+	env.server.Close()
+}
+
+func TestCollectCompletion_v6(t *testing.T) {
+	env := &testEnv{}
+	ctx := context.Background()
+
+	env.handler = func(w http.ResponseWriter, r *http.Request) {
+		rsp := CollectResponse{
+			OrderRef: "131daac9-16c6-4618-beb0-365768f37288",
+			Status:   OrderComplete,
+			CompletionData: &Completion{
+				User: User{
+					PersonalNumber: "197001010000",
+					Name:           "Test Testsson",
+					GivenName:      "Test",
+					Surname:        "Testsson",
+				},
+				Device: Device{
+					IPAddress: "192.168.0.1",
+					UHI:       "abc123def456",
+				},
+				BankIDIssueDate: "2023-01-01Z",
+				StepUp: &StepUp{
+					MRTD: false,
+				},
+				Signature:    "PHNpZ25hdHVyZT4=",
+				OCSPResponse: "MIIHfgoBAKCCB3c=",
+				Risk:         "low",
+			},
+		}
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(&rsp)
+	}
+
+	resp, err := Collect(ctx, env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
+	assert.Nil(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, OrderComplete, resp.Status)
+	assert.NotNil(t, resp.CompletionData)
+	assert.Equal(t, "Test Testsson", resp.CompletionData.User.Name)
+	assert.Equal(t, "abc123def456", resp.CompletionData.Device.UHI)
+	assert.Equal(t, "2023-01-01Z", resp.CompletionData.BankIDIssueDate)
+	assert.NotNil(t, resp.CompletionData.StepUp)
+	assert.False(t, resp.CompletionData.StepUp.MRTD)
+	assert.Equal(t, "low", resp.CompletionData.Risk)
+
+	env.server.Close()
+}
+
+func TestIsErrorResponse(t *testing.T) {
+	env := &testEnv{}
+	ctx := context.Background()
+
+	env.handler = func(w http.ResponseWriter, r *http.Request) {
+		errRsp := ErrorResponse{
+			ErrorCode: "alreadyInProgress",
+			Details:   "An order is already in progress",
+		}
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(&errRsp)
+	}
+
+	_, err := Auth(ctx, env, &AuthRequest{EndUserIP: "127.0.0.1"})
+	assert.NotNil(t, err)
+
+	bankidErr, ok := IsErrorResponse(err)
+	assert.True(t, ok)
+	assert.Equal(t, "alreadyInProgress", bankidErr.ErrorCode)
 
 	env.server.Close()
 }
@@ -215,21 +338,22 @@ type invalidEnv struct {
 	requestError error
 }
 
-func (t *invalidEnv) NewRequest(endpoint string, body interface{}) (*http.Request, error) {
+func (t *invalidEnv) NewRequest(ctx context.Context, endpoint string, body interface{}) (*http.Request, error) {
 	return t.request, t.requestError
 }
 
 func TestCallMethod(t *testing.T) {
 	env := &invalidEnv{}
+	ctx := context.Background()
 
 	env.request = &http.Request{}
 	env.requestError = nil
-	req, err := call("", env, nil, nil)
+	req, err := call(ctx, "", env, nil, nil)
 	assert.Nil(t, req)
 	assert.NotNil(t, err)
 
 	env.requestError = fmt.Errorf("fake invalid response")
-	req, err = call("", env, nil, nil)
+	req, err = call(ctx, "", env, nil, nil)
 	assert.Nil(t, req)
 	assert.NotNil(t, err)
 }

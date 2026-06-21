@@ -1,6 +1,7 @@
 package bankid
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,13 +32,15 @@ func TestRequestsBad(t *testing.T) {
 	assert.Nil(t, err)
 	assert.NotNil(t, env)
 
+	ctx := context.Background()
+
 	// Bad body
 	var invalidBodyType chan int
-	_, err = env.NewRequest("endpoint", invalidBodyType)
+	_, err = env.NewRequest(ctx, "endpoint", invalidBodyType)
 	assert.NotNil(t, err)
 
 	// Bad schema
-	_, err = env.NewRequest("endpoint", "")
+	_, err = env.NewRequest(ctx, "endpoint", "")
 	assert.NotNil(t, err)
 }
 
@@ -46,12 +49,20 @@ func TestRequestsOK(t *testing.T) {
 	assert.Nil(t, err)
 	assert.NotNil(t, env)
 
+	ctx := context.Background()
+
 	// All A OK
-	req, err := env.NewRequest("endpoint", "")
+	req, err := env.NewRequest(ctx, "endpoint", "")
 	assert.Nil(t, err)
 	assert.NotNil(t, req)
 
-	// Initate client
+	// Verify v6.0 API path
+	assert.Contains(t, req.URL.String(), "/rp/v6.0")
+
+	// Verify content-type header
+	assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+
+	// Initiate client
 	client := env.NewClient()
 	assert.NotNil(t, client)
 }

@@ -1,17 +1,47 @@
-# BankID API
+# BankID API v6.0
 
-This little module helps with BankID integrations.
+Go library for integrating with the [BankID](https://www.bankid.com/) authentication service (Sweden).
 
-## Authentication flow
+> **⚠️ Breaking changes from v5:** This library has been upgraded to BankID API v6.0. The `personalNumber` parameter has been removed from `/auth` and `/sign` endpoints. Authentication now requires either animated QR codes (another device) or autostart tokens (same device). See the [BankID Developer Portal](https://www.bankid.com/en/utvecklare) for full details.
 
-![BankID Authentication flow](auth_flow.png)
+## Features
 
-Example in the `./example/` directory demonstrates using the BankID app on another device.
+- **Authentication** (`/auth`) — Initiate user authentication
+- **Signing** (`/sign`) — Initiate document signing
+- **Phone authentication** (`/phone/auth`) — Authenticate during phone calls
+- **Phone signing** (`/phone/sign`) — Sign during phone calls
+- **Collect** (`/collect`) — Poll for order status
+- **Cancel** (`/cancel`) — Cancel ongoing orders
+- **Animated QR codes** — Generate QR code data per the Secure Start specification
+- **Recommended messages** — RFA messages in Swedish and English (per RP Guidelines v6.0)
+
+## Authentication Flow
+
+BankID v6.0 requires "Secure Start" for all authentication flows:
+
+### Same Device (Autostart)
+1. Call `Auth()` with the end user's IP
+2. Use `autoStartToken` from the response to open `bankid:///?autostarttoken=<token>&redirect=null`
+3. Poll `Collect()` every 2 seconds until complete or failed
+
+### Another Device (QR Code)
+1. Call `Auth()` with the end user's IP
+2. Use `qrStartToken` and `qrStartSecret` from the response
+3. Generate animated QR data every second using `GenerateQRData()`
+4. Display the QR code to the user
+5. Poll `Collect()` every 2 seconds until complete or failed
+
+### Phone Call
+1. Call `PhoneAuth()` with the user's personal number and call initiator
+2. Poll `Collect()` every 2 seconds until complete or failed
+
+## Example
 
 ```golang
 package main
 
 import (
+    "context"
     "fmt"
     "log"
     "os"
@@ -21,117 +51,105 @@ import (
 )
 
 func main() {
-
-    // Let's use the official messages
-    // for events and errors, in English
     p, _ := bankid.NewMessages("en")
 
     caTestPath := "../CA/test.crt"
-    rpCrtPath := "../rp/bankid_rp_test.crt" // NOTE: Replace with your RP (Relaying Partner) certificate
-    rpKeyPath := "../rp/bankid_rp_test.key" // NOTE: Replace with your RP key
+    rpCrtPath := "../rp/bankid_rp_test.crt" // NOTE: Replace with your RP certificate
+    rpKeyPath := "../rp/bankid_rp_test.key"  // NOTE: Replace with your RP key
 
     // bankid.TestBaseURL or bankid.ProductionBaseURL
     env, err := bankid.NewEnvironment(bankid.TestBaseURL, caTestPath, rpCrtPath, rpKeyPath)
     if err != nil {
-        log.Printf(" !! Could not create TestEnvironment: %s", err.Error())
-        os.Exit(1)
+        log.Fatalf("Could not create environment: %s", err.Error())
     }
 
-    // Remove non-digits from personal number
-    personalNumber := "198001010109" // NOTE: Replace with a real personal number
-    ipAddr := "127.0.0.1"            // IP of your mobile phone with BankID app on it
+    ctx := context.Background()
 
-    // Print message as instructed by the RP Guidelines v3.2.2
-    fmt.Println(" >> " + p.Msg(bankid.RFA19))
-
-    rsp, err := bankid.Auth(env, personalNumber, ipAddr)
+    // v6.0: No personal number in auth request!
+    rsp, err := bankid.Auth(ctx, env, &bankid.AuthRequest{
+        EndUserIP: "127.0.0.1",
+    })
     if err != nil {
-        log.Printf(" !! Could not connect to server: %s\n", err.Error())
-        os.Exit(1)
+        log.Fatalf("Could not start auth: %s", err.Error())
     }
 
-    // Auth started!
-    // Pull out your BankID app and sign the Auth request
-    collectResponse := &bankid.CollectResponse{}
-    done := false
-    for !done {
-        collectResponse, err = bankid.Collect(env, rsp.OrderRef)
+    fmt.Printf("Order started: %s\n", rsp.OrderRef)
+    fmt.Printf("AutoStartToken: %s\n", rsp.AutoStartToken)
+
+    // Generate animated QR codes for another-device flow
+    orderStart := time.Now()
+
+    for {
+        elapsed := time.Since(orderStart)
+        qrData := bankid.GenerateQRData(rsp.QRStartToken, rsp.QRStartSecret, elapsed)
+        fmt.Printf("QR: %s\n", qrData)
+
+        collectRsp, err := bankid.Collect(ctx, env, rsp.OrderRef)
         if err != nil {
-            log.Printf(" !! Could not collect: %s\n", err.Error())
-            os.Exit(1)
+            log.Fatalf("Could not collect: %s", err.Error())
         }
 
-        switch collectResponse.Status {
+        switch collectRsp.Status {
         case bankid.OrderPending:
-            switch collectResponse.HintCode {
-            case bankid.PendOutstandingTransaction:
-                {
-                    fmt.Println(" >> " + p.Msg(bankid.RFA1))
-                }
-            case bankid.PendNoClient:
-                {
-                    fmt.Println(" >> " + p.Msg(bankid.RFA1))
-                }
+            switch collectRsp.HintCode {
+            case bankid.PendOutstandingTransaction, bankid.PendNoClient:
+                fmt.Println(p.Msg(bankid.RFA1))
             case bankid.PendStarted:
-                {
-                    fmt.Println(" >> " + p.Msg(bankid.RFA14_B))
-                }
+                fmt.Println(p.Msg(bankid.RFA15_B))
             case bankid.PendUserSign:
-                {
-                    fmt.Println(" >> " + p.Msg(bankid.RFA9))
-                }
+                fmt.Println(p.Msg(bankid.RFA9))
+            case bankid.PendUserMrtd:
+                fmt.Println(p.Msg(bankid.RFA23))
+            default:
+                fmt.Println(p.Msg(bankid.RFA21))
             }
         case bankid.OrderFailed:
-            {
-                done = true
-                switch collectResponse.HintCode {
-                case bankid.FailCancelled:
-                    {
-                        fmt.Println(" >> " + p.Msg(bankid.RFA3))
-                        break
-                    }
-                case bankid.FailUserCancel:
-                    {
-                        fmt.Println(" >> " + p.Msg(bankid.RFA6))
-                        break
-                    }
-                case bankid.FailExpiredTransaction:
-                    {
-                        fmt.Println(" >> " + p.Msg(bankid.RFA8))
-                        break
-                    }
-                }
-            }
+            fmt.Println(p.Msg(bankid.RFA22))
+            os.Exit(1)
         case bankid.OrderComplete:
-            {
-                done = true
-                log.Println(" >> 😎 Auth Complete ")
-                log.Printf(" >> %s signed in!\n", collectResponse.CompletionData.User.Name)
-                break
-            }
+            fmt.Printf("✅ %s authenticated!\n", collectRsp.CompletionData.User.Name)
+            os.Exit(0)
         }
-        // Don't spam the service plz
+
         time.Sleep(2 * time.Second)
     }
-
-    // Just to demonstrate cancelling, we'll probably never end up here.
-    if collectResponse.Status == bankid.OrderPending {
-        err = bankid.Cancel(env, rsp.OrderRef)
-        if err != nil {
-            log.Printf(" !! Could not cancel request: %s\n", err.Error())
-        }
-        log.Printf(" >> Auth cancelled\n")
-    }
 }
-
 ```
 
-For signing data, use the `bankid.Sign()` method instead of the `bankid.Auth()` method. The flow is the same. 
+For signing data, use `bankid.Sign()` with a `SignRequest` instead. The flow is the same.
+
+## QR Code Generation
+
+The `GenerateQRData()` function produces the data string to encode as a QR image:
+
+```golang
+// Call every second with increasing elapsed time
+qrData := bankid.GenerateQRData(rsp.QRStartToken, rsp.QRStartSecret, elapsed)
+// Use any QR library to render qrData as a QR code image
+```
+
+The algorithm: `bankid.<qrStartToken>.<seconds>.<HMAC-SHA256(qrStartSecret, seconds)>`
+
+## Error Handling
+
+BankID errors can be inspected using `IsErrorResponse()`:
+
+```golang
+_, err := bankid.Auth(ctx, env, req)
+if errRsp, ok := bankid.IsErrorResponse(err); ok {
+    switch errRsp.ErrorCode {
+    case "alreadyInProgress":
+        // Show RFA4 message
+    case "invalidParameters":
+        // Check your request
+    }
+}
+```
 
 ## License
 
 MIT License
-Copyright (c) 2019 Joakim Fernstad
+Copyright (c) 2026 Joakim Fernstad
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

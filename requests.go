@@ -1,107 +1,116 @@
 package bankid
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
 
-// Use this to parse the BankID API response, see stdResponseParser
-type responseParser func(*http.Response) (interface{}, error)
+// Auth initiates an authentication order.
+//
+// In BankID v6.0, the user's personal number is no longer accepted here.
+// The response contains an autoStartToken (for same-device flows) and
+// qrStartToken/qrStartSecret (for animated QR code flows on another device).
+func Auth(ctx context.Context, env Environmenter, req *AuthRequest) (*Response, error) {
+	output := &Response{}
+	rsp, err := call(ctx, AuthEndpoint, env, req, responseParser)
+	if err == nil && rsp != nil {
+		output = rsp.(*Response)
+	}
+	return output, err
+}
 
-// Sign - besides personalNumber and userIP inputs as
-// the Auth() call we also need data to sign.
+// Sign initiates a signing order.
 //
-// From documentation:
-// User Visible data
-//  The text to be displayed and signed. String.
-//  The text can be formatted using CR, LF and CRLF for new lines.
-//  The text must be encoded as UTF-8 and then base64 encoded.
-//  1 to 40'000 characters after base64 encoding.
-//
-// User Non-visible data
-//  Data not displayed to the user. String.
-//  The value must be base64-encoded.
-//  1 to 200'000 characters after base64-encoding.
-//
-// -------------------
-// Because of base64-encoding adds 33% overhead, don't send more than
-//  30'000 bytes of Visible data and
-// 150'000 bytes of Non-visible data
-//
-// The Sign() method will base64-encode both the UserVisible and UserNonVisible data.
-// Choose whichever line ending character you need.
-func Sign(env Environmenter, personalNumber string, userIP string, userVisible string, userNonVisible string) (*Response, error) {
-
+// The userVisibleData in the request will be base64-encoded automatically.
+// If userNonVisibleData is provided, it will also be base64-encoded.
+func Sign(ctx context.Context, env Environmenter, req *SignRequest) (*Response, error) {
 	// Base64 encode with padding
-	if userVisible != "" {
-		userVisible = base64.StdEncoding.EncodeToString([]byte(userVisible))
+	if req.UserVisibleData != "" {
+		req.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserVisibleData))
 	}
 
-	if userNonVisible != "" {
-		userNonVisible = base64.StdEncoding.EncodeToString([]byte(userNonVisible))
-	}
-
-	requestBody := Request{
-		PersonalNumber:     personalNumber,
-		EndUserIP:          userIP,
-		UserVisibleData:    userVisible,
-		UserNonVisibleData: userNonVisible,
+	if req.UserNonVisibleData != "" {
+		req.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserNonVisibleData))
 	}
 
 	output := &Response{}
-	rsp, err := call(SignEndpoint, env, &requestBody, stdResponseParser)
+	rsp, err := call(ctx, SignEndpoint, env, req, responseParser)
 	if err == nil && rsp != nil {
 		output = rsp.(*Response)
 	}
 	return output, err
 }
 
-// Auth - verify a users identity
-func Auth(env Environmenter, personalNumber string, userIP string) (*Response, error) {
-	requestBody := Request{
-		PersonalNumber: personalNumber,
-		EndUserIP:      userIP,
-	}
-	output := &Response{}
-	rsp, err := call(AuthEndpoint, env, &requestBody, stdResponseParser)
+// PhoneAuth initiates authentication during a phone call.
+// This is the only v6.0 flow that accepts a personal number directly,
+// as the customer service agent already knows who they are speaking to.
+func PhoneAuth(ctx context.Context, env Environmenter, req *PhoneAuthRequest) (*PhoneResponse, error) {
+	output := &PhoneResponse{}
+	rsp, err := call(ctx, PhoneAuthEndpoint, env, req, phoneResponseParser)
 	if err == nil && rsp != nil {
-		output = rsp.(*Response)
+		output = rsp.(*PhoneResponse)
 	}
 	return output, err
 }
 
-func Collect(env Environmenter, orderRef string) (*CollectResponse, error) {
-	requestBody := Request{
+// PhoneSign initiates signing during a phone call.
+// The userVisibleData will be base64-encoded automatically.
+func PhoneSign(ctx context.Context, env Environmenter, req *PhoneSignRequest) (*PhoneResponse, error) {
+	if req.UserVisibleData != "" {
+		req.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserVisibleData))
+	}
+
+	if req.UserNonVisibleData != "" {
+		req.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserNonVisibleData))
+	}
+
+	output := &PhoneResponse{}
+	rsp, err := call(ctx, PhoneSignEndpoint, env, req, phoneResponseParser)
+	if err == nil && rsp != nil {
+		output = rsp.(*PhoneResponse)
+	}
+	return output, err
+}
+
+// Collect polls for the status of an ongoing order.
+// Call this approximately every 2 seconds until the order reaches
+// a final status (complete or failed).
+func Collect(ctx context.Context, env Environmenter, orderRef string) (*CollectResponse, error) {
+	requestBody := CollectRequest{
 		OrderRef: orderRef,
 	}
 
 	output := &CollectResponse{}
-	rsp, err := call(CollectEndpoint, env, &requestBody, collectParser)
+	rsp, err := call(ctx, CollectEndpoint, env, &requestBody, collectParser)
 	if err == nil && rsp != nil {
 		output = rsp.(*CollectResponse)
 	}
 	return output, err
 }
 
-// Cancel -
-func Cancel(env Environmenter, orderRef string) error {
-	requestBody := Request{
+// Cancel cancels an ongoing order.
+func Cancel(ctx context.Context, env Environmenter, orderRef string) error {
+	requestBody := CancelRequest{
 		OrderRef: orderRef,
 	}
-	_, err := call(CancelEndpoint, env, &requestBody, stdResponseParser)
+	_, err := call(ctx, CancelEndpoint, env, &requestBody, responseParser)
 	return err
 }
 
-func call(endpoint string, env Environmenter, requestBody *Request, rspParser responseParser) (interface{}, error) {
+// responseParserFunc is used to parse the BankID API response
+type responseParserFunc func(*http.Response) (interface{}, error)
 
-	req, err := env.NewRequest(endpoint, requestBody)
+func call(ctx context.Context, endpoint string, env Environmenter, requestBody interface{}, rspParser responseParserFunc) (interface{}, error) {
+	req, err := env.NewRequest(ctx, endpoint, requestBody)
 	if err != nil {
 		return nil, err
 	}
 
-	client := env.NewClient() // A http.Client with a HTTP Mutal Authentication loaded
+	client := env.NewClient()
 
 	rsp, err := client.Do(req)
 	if err != nil {
@@ -111,7 +120,7 @@ func call(endpoint string, env Environmenter, requestBody *Request, rspParser re
 	return rspParser(rsp)
 }
 
-func stdResponseParser(rsp *http.Response) (interface{}, error) {
+func responseParser(rsp *http.Response) (interface{}, error) {
 	defer rsp.Body.Close()
 
 	// OK
@@ -119,7 +128,7 @@ func stdResponseParser(rsp *http.Response) (interface{}, error) {
 		authRsp := Response{}
 		err := json.NewDecoder(rsp.Body).Decode(&authRsp)
 		if err != nil {
-			return nil, fmt.Errorf(" !! failed to parse successful response: %s", err.Error())
+			return nil, fmt.Errorf("failed to parse successful response: %w", err)
 		}
 		return &authRsp, nil
 	}
@@ -129,9 +138,36 @@ func stdResponseParser(rsp *http.Response) (interface{}, error) {
 		errRsp := ErrorResponse{}
 		err := json.NewDecoder(rsp.Body).Decode(&errRsp)
 		if err != nil {
-			return nil, fmt.Errorf(" !! failed to parse fail response: %s", err.Error())
+			return nil, fmt.Errorf("failed to parse error response: %w", err)
 		}
-		return nil, errRsp // A bit unorthodox but ErrorResponse is a proper error type
+		return nil, errRsp
+	}
+
+	// We don't care about HTTP 1xx messages
+	return nil, nil
+}
+
+func phoneResponseParser(rsp *http.Response) (interface{}, error) {
+	defer rsp.Body.Close()
+
+	// OK
+	if rsp.StatusCode >= 200 && rsp.StatusCode < 400 {
+		phoneRsp := PhoneResponse{}
+		err := json.NewDecoder(rsp.Body).Decode(&phoneRsp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse successful response: %w", err)
+		}
+		return &phoneRsp, nil
+	}
+
+	// Fail
+	if rsp.StatusCode >= 400 {
+		errRsp := ErrorResponse{}
+		err := json.NewDecoder(rsp.Body).Decode(&errRsp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse error response: %w", err)
+		}
+		return nil, errRsp
 	}
 
 	// We don't care about HTTP 1xx messages
@@ -146,7 +182,7 @@ func collectParser(rsp *http.Response) (interface{}, error) {
 		collectRsp := CollectResponse{}
 		err := json.NewDecoder(rsp.Body).Decode(&collectRsp)
 		if err != nil {
-			return nil, fmt.Errorf(" !! failed to parse successful response: %s", err.Error())
+			return nil, fmt.Errorf("failed to parse successful response: %w", err)
 		}
 		return &collectRsp, nil
 	}
@@ -156,10 +192,20 @@ func collectParser(rsp *http.Response) (interface{}, error) {
 		errRsp := ErrorResponse{}
 		err := json.NewDecoder(rsp.Body).Decode(&errRsp)
 		if err != nil {
-			return nil, fmt.Errorf(" !! failed to parse fail response: %s", err.Error())
+			return nil, fmt.Errorf("failed to parse error response: %w", err)
 		}
-		return nil, errRsp // A bit unorthodox but ErrorResponse is a proper error type
+		return nil, errRsp
 	}
 	// We don't care about HTTP 1xx messages
 	return nil, nil
+}
+
+// IsErrorResponse checks if the given error is a BankID ErrorResponse
+// and returns it if so. This allows callers to inspect error codes.
+func IsErrorResponse(err error) (*ErrorResponse, bool) {
+	var errRsp ErrorResponse
+	if errors.As(err, &errRsp) {
+		return &errRsp, true
+	}
+	return nil, false
 }

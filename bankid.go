@@ -1,33 +1,35 @@
 package bankid
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
 
 // API Constants
 const (
-	ProductionBaseURL string = "https://appapi2.bankid.com"
-	TestBaseURL       string = "https://appapi2.test.bankid.com"
-	APIVersion        string = "/rp/v5"
-	AuthEndpoint      string = "/auth"
-	SignEndpoint      string = "/sign"
-	CollectEndpoint   string = "/collect"
-	CancelEndpoint    string = "/cancel"
+	ProductionBaseURL    string = "https://appapi2.bankid.com"
+	TestBaseURL          string = "https://appapi2.test.bankid.com"
+	APIVersion           string = "/rp/v6.0"
+	AuthEndpoint         string = "/auth"
+	SignEndpoint         string = "/sign"
+	CollectEndpoint      string = "/collect"
+	CancelEndpoint       string = "/cancel"
+	PhoneAuthEndpoint    string = "/phone/auth"
+	PhoneSignEndpoint    string = "/phone/sign"
 )
 
-// Environmenter  ¯\_(ツ)_/¯
-// Helps setup requests to the BankID API
+// Environmenter helps setup requests to the BankID API
 type Environmenter interface {
 	NewClient() *http.Client
-	NewRequest(endpoint string, body interface{}) (*http.Request, error)
+	NewRequest(ctx context.Context, endpoint string, body interface{}) (*http.Request, error)
 }
 
 type environment struct {
@@ -35,9 +37,9 @@ type environment struct {
 	clientConfig *tls.Config
 }
 
-// NewEnvironment - sets up the certificates and URLs needed to identify ourselves with the BankID service
+// NewEnvironment sets up the certificates and URLs needed to identify ourselves with the BankID service
 func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath string) (Environmenter, error) {
-	ca, err := ioutil.ReadFile(caPath)
+	ca, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not load CA Certificate: %s", err.Error())
 	}
@@ -49,7 +51,7 @@ func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath 
 
 	caPool := x509.NewCertPool()
 
-	if caPool.AppendCertsFromPEM(ca) == false {
+	if !caPool.AppendCertsFromPEM(ca) {
 		return nil, fmt.Errorf("could not append CA Certificate to pool. Invalid certificate?")
 	}
 
@@ -57,7 +59,6 @@ func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath 
 		Certificates: []tls.Certificate{rpCert},
 		ClientCAs:    caPool,
 		RootCAs:      caPool,
-		// InsecureSkipVerify: true, // For some reason is BankID not using a proper domain certificate
 	}
 	return &environment{
 		baseURL:      baseURL,
@@ -65,31 +66,31 @@ func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath 
 	}, nil
 }
 
-// NewRequest - helper function to bake a request
-func (e *environment) NewRequest(endpoint string, body interface{}) (*http.Request, error) {
+// NewRequest creates an HTTP request for the given endpoint and body
+func (e *environment) NewRequest(ctx context.Context, endpoint string, body interface{}) (*http.Request, error) {
 	requestBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 
 	bodyReader := strings.NewReader(string(requestBody))
-	req, err := http.NewRequest("POST", e.baseURL+APIVersion+endpoint, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, "POST", e.baseURL+APIVersion+endpoint, bodyReader)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Content-Type", "Application/json")
+	req.Header.Add("Content-Type", "application/json")
 	return req, nil
 }
 
-// NewRequest - helper function to bake a new http.Client with our TLS Confnig
+// NewClient creates a new http.Client with our TLS Config
 func (e *environment) NewClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
-			Dial: (&net.Dialer{
+			DialContext: (&net.Dialer{
 				Timeout:   5 * time.Second,
 				KeepAlive: 30 * time.Second,
-			}).Dial,
+			}).DialContext,
 			TLSClientConfig:     e.clientConfig,
 			TLSHandshakeTimeout: 5 * time.Second,
 			IdleConnTimeout:     90 * time.Second,
