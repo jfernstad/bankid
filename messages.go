@@ -109,7 +109,9 @@ func NewMessages(lang string) (*Messages, error) {
 }
 
 // Msg returns the message string for the provided key.
-// Missing keys return an empty string.
+// If the key is not found (e.g. a typo or unsupported RFA code),
+// an empty string is returned. Callers should use the RFA constants
+// (e.g. RFA1, RFA9) to avoid this.
 func (m *Messages) Msg(key string) string {
 	return m.msgs[key]
 }

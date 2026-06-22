@@ -2,6 +2,7 @@ package bankid
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,25 @@ func TestValidEnvironment(t *testing.T) {
 	// Cert Files OK
 	_, err := NewEnvironment("BASE_URL", "./CA/test.crt", "./rp/bankid_rp_test.crt", "./rp/bankid_rp_test.key")
 	assert.Nil(t, err)
+}
+
+func TestNewEnvironmentFromBytes(t *testing.T) {
+	ca, _ := os.ReadFile("./CA/test.crt")
+	cert, _ := os.ReadFile("./rp/bankid_rp_test.crt")
+	key, _ := os.ReadFile("./rp/bankid_rp_test.key")
+
+	// Valid bytes
+	env, err := NewEnvironmentFromBytes("BASE_URL", ca, cert, key)
+	assert.Nil(t, err)
+	assert.NotNil(t, env)
+
+	// Invalid RP keypair
+	_, err = NewEnvironmentFromBytes("BASE_URL", ca, []byte("bad"), []byte("bad"))
+	assert.NotNil(t, err)
+
+	// Invalid CA
+	_, err = NewEnvironmentFromBytes("BASE_URL", []byte("bad"), cert, key)
+	assert.NotNil(t, err)
 }
 
 func TestRequestsBad(t *testing.T) {

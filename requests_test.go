@@ -31,10 +31,12 @@ func (t *testEnv) NewClient() *http.Client {
 		Timeout: 10 * time.Second,
 	}
 }
-func (t *testEnv) NewRequest(ctx context.Context, endpoint string, body interface{}) (*http.Request, error) {
-	t.server = httptest.NewServer(http.HandlerFunc(t.handler))
-
-	fmt.Println("Test server at ", t.server.Listener.Addr().String())
+func (te *testEnv) NewRequest(ctx context.Context, endpoint string, body interface{}) (*http.Request, error) {
+	// Close any previous server to prevent leaks
+	if te.server != nil {
+		te.server.Close()
+	}
+	te.server = httptest.NewServer(http.HandlerFunc(te.handler))
 
 	requestBody, err := json.Marshal(body)
 	if err != nil {
@@ -42,7 +44,7 @@ func (t *testEnv) NewRequest(ctx context.Context, endpoint string, body interfac
 	}
 
 	bodyReader := strings.NewReader(string(requestBody))
-	req, err := http.NewRequestWithContext(ctx, "POST", "http://"+t.server.URL+"/"+APIVersion+endpoint, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, "POST", "http://"+te.server.URL+"/"+APIVersion+endpoint, bodyReader)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +57,7 @@ func (t *testEnv) NewRequest(ctx context.Context, endpoint string, body interfac
 type tt struct {
 	name    string
 	handler func(w http.ResponseWriter, r *http.Request)
-	assert  func(resp interface{}, err error)
+	assert  func(t *testing.T, resp interface{}, err error)
 }
 
 //
@@ -76,7 +78,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 				w.WriteHeader(200)
 				json.NewEncoder(w).Encode(&authRsp)
 			},
-			assert: func(resp interface{}, err error) {
+			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.Nil(t, err)
 				assert.NotNil(t, resp)
 			},
@@ -86,7 +88,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Write(nil) // Empty and invalid
 			},
-			assert: func(resp interface{}, err error) {
+			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
 				assert.Empty(t, resp)
 			},
@@ -98,7 +100,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 				w.WriteHeader(400)
 				json.NewEncoder(w).Encode(&errRsp)
 			},
-			assert: func(resp interface{}, err error) {
+			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
 				assert.NotEmpty(t, err.Error())
 				assert.Empty(t, resp)
@@ -110,20 +112,21 @@ func TestSignAuthCollect_v6(t *testing.T) {
 				w.WriteHeader(400)
 				w.Write(nil) // Empty and invalid
 			},
-			assert: func(resp interface{}, err error) {
+			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
 				assert.NotEmpty(t, err.Error())
 				assert.Empty(t, resp)
 			},
 		},
-		{ // Mostly for test coverage
-			name: "Expected: Fail, we don't handle 1xx/3xx messages",
+		{
+			name: "Expected: Fail, unexpected status codes return an error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(101)
-				w.Write(nil) // Empty and invalid
+				w.Write(nil)
 			},
-			assert: func(resp interface{}, err error) {
-				assert.Nil(t, err)
+			assert: func(t *testing.T, resp interface{}, err error) {
+				assert.NotNil(t, err)
+				assert.Contains(t, err.Error(), "unexpected HTTP status")
 				assert.Empty(t, resp)
 			},
 		},
@@ -135,30 +138,30 @@ func TestSignAuthCollect_v6(t *testing.T) {
 	// Auth - v6.0 (no personal number)
 	for _, at := range testFunctions {
 		env.handler = at.handler
-		fmt.Printf("Auth: %s - ", at.name)
+		t.Logf("Auth: %s", at.name)
 		resp, err := Auth(ctx, env, &AuthRequest{
 			EndUserIP: "127.0.0.1",
 		})
-		at.assert(resp, err)
+		at.assert(t, resp, err)
 	}
 
 	// Sign - v6.0 (no personal number)
 	for _, at := range testFunctions {
 		env.handler = at.handler
-		fmt.Printf("Sign: %s - ", at.name)
+		t.Logf("Sign: %s", at.name)
 		resp, err := Sign(ctx, env, &SignRequest{
 			EndUserIP:       "127.0.0.1",
 			UserVisibleData: "Test signing data",
 		})
-		at.assert(resp, err)
+		at.assert(t, resp, err)
 	}
 
 	// Collecting status
 	for _, at := range testFunctions {
 		env.handler = at.handler
-		fmt.Printf("Collect: %s - ", at.name)
+		t.Logf("Collect: %s", at.name)
 		resp, err := Collect(ctx, env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
-		at.assert(resp, err)
+		at.assert(t, resp, err)
 	}
 
 	env.server.Close()
@@ -219,7 +222,7 @@ func TestCancel_v6(t *testing.T) {
 				w.WriteHeader(200)
 				json.NewEncoder(w).Encode(&authRsp)
 			},
-			assert: func(_ interface{}, err error) {
+			assert: func(t *testing.T, _ interface{}, err error) {
 				assert.Nil(t, err)
 			},
 		},
@@ -228,7 +231,7 @@ func TestCancel_v6(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Write(nil) // Empty and invalid
 			},
-			assert: func(_ interface{}, err error) {
+			assert: func(t *testing.T, _ interface{}, err error) {
 				assert.NotNil(t, err)
 			},
 		},
@@ -239,7 +242,7 @@ func TestCancel_v6(t *testing.T) {
 				w.WriteHeader(400)
 				json.NewEncoder(w).Encode(&errRsp)
 			},
-			assert: func(_ interface{}, err error) {
+			assert: func(t *testing.T, _ interface{}, err error) {
 				assert.NotNil(t, err)
 			},
 		},
@@ -250,9 +253,9 @@ func TestCancel_v6(t *testing.T) {
 
 	for _, at := range testFunctions {
 		env.handler = at.handler
-		fmt.Printf("Cancel: %s - ", at.name)
+		t.Logf("Cancel: %s", at.name)
 		err := Cancel(ctx, env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
-		at.assert(nil, err)
+		at.assert(t, nil, err)
 	}
 
 	env.server.Close()

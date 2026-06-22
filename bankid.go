@@ -35,16 +35,36 @@ type Environmenter interface {
 type environment struct {
 	baseURL      string
 	clientConfig *tls.Config
+	client       *http.Client
 }
 
-// NewEnvironment sets up the certificates and URLs needed to identify ourselves with the BankID service
+// NewEnvironment sets up the certificates and URLs needed to identify ourselves with the BankID service.
+// Certificate files are loaded from the provided file paths.
+// For loading certificates from memory (e.g. Vault, K8s secrets), use NewEnvironmentFromBytes.
 func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath string) (Environmenter, error) {
 	ca, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not load CA Certificate: %s", err.Error())
 	}
 
-	rpCert, err := tls.LoadX509KeyPair(rpCertPath, rpKeyPath)
+	rpCert, err := os.ReadFile(rpCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not load RP Certificate: %s", err.Error())
+	}
+
+	rpKey, err := os.ReadFile(rpKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not load RP Key: %s", err.Error())
+	}
+
+	return NewEnvironmentFromBytes(baseURL, ca, rpCert, rpKey)
+}
+
+// NewEnvironmentFromBytes sets up the certificates and URLs needed to identify ourselves
+// with the BankID service, using raw PEM-encoded certificate bytes.
+// This is useful when loading certificates from environment variables, Vault, K8s secrets, etc.
+func NewEnvironmentFromBytes(baseURL string, ca []byte, rpCert []byte, rpKey []byte) (Environmenter, error) {
+	keyPair, err := tls.X509KeyPair(rpCert, rpKey)
 	if err != nil {
 		return nil, fmt.Errorf("could not load RP Keypair: %s", err.Error())
 	}
@@ -56,14 +76,18 @@ func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath 
 	}
 
 	clientCfg := tls.Config{
-		Certificates: []tls.Certificate{rpCert},
+		MinVersion:   tls.VersionTLS12, // BankID requires TLS 1.2+
+		Certificates: []tls.Certificate{keyPair},
 		ClientCAs:    caPool,
 		RootCAs:      caPool,
 	}
-	return &environment{
+
+	env := &environment{
 		baseURL:      baseURL,
 		clientConfig: &clientCfg,
-	}, nil
+	}
+	env.client = env.newClient()
+	return env, nil
 }
 
 // NewRequest creates an HTTP request for the given endpoint and body
@@ -83,8 +107,14 @@ func (e *environment) NewRequest(ctx context.Context, endpoint string, body inte
 	return req, nil
 }
 
-// NewClient creates a new http.Client with our TLS Config
+// NewClient returns the shared http.Client with our TLS Config.
+// The client is created once and reused to benefit from connection pooling.
 func (e *environment) NewClient() *http.Client {
+	return e.client
+}
+
+// newClient creates the underlying http.Client with TLS and timeout configuration.
+func (e *environment) newClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{

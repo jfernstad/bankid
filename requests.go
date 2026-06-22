@@ -6,8 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 )
+
+// maxResponseSize limits how much data we read from BankID API responses (1 MB).
+// This prevents memory exhaustion from malformed or malicious responses.
+const maxResponseSize = 1 << 20
 
 // Auth initiates an authentication order.
 //
@@ -27,18 +32,22 @@ func Auth(ctx context.Context, env Environmenter, req *AuthRequest) (*Response, 
 //
 // The userVisibleData in the request will be base64-encoded automatically.
 // If userNonVisibleData is provided, it will also be base64-encoded.
+// The original request struct is not modified.
 func Sign(ctx context.Context, env Environmenter, req *SignRequest) (*Response, error) {
+	// Copy the request to avoid mutating the caller's struct (prevents double-encoding on reuse)
+	encodedReq := *req
+
 	// Base64 encode with padding
-	if req.UserVisibleData != "" {
-		req.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserVisibleData))
+	if encodedReq.UserVisibleData != "" {
+		encodedReq.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserVisibleData))
 	}
 
-	if req.UserNonVisibleData != "" {
-		req.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserNonVisibleData))
+	if encodedReq.UserNonVisibleData != "" {
+		encodedReq.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserNonVisibleData))
 	}
 
 	output := &Response{}
-	rsp, err := call(ctx, SignEndpoint, env, req, responseParser)
+	rsp, err := call(ctx, SignEndpoint, env, &encodedReq, responseParser)
 	if err == nil && rsp != nil {
 		output = rsp.(*Response)
 	}
@@ -59,17 +68,21 @@ func PhoneAuth(ctx context.Context, env Environmenter, req *PhoneAuthRequest) (*
 
 // PhoneSign initiates signing during a phone call.
 // The userVisibleData will be base64-encoded automatically.
+// The original request struct is not modified.
 func PhoneSign(ctx context.Context, env Environmenter, req *PhoneSignRequest) (*PhoneResponse, error) {
-	if req.UserVisibleData != "" {
-		req.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserVisibleData))
+	// Copy the request to avoid mutating the caller's struct (prevents double-encoding on reuse)
+	encodedReq := *req
+
+	if encodedReq.UserVisibleData != "" {
+		encodedReq.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserVisibleData))
 	}
 
-	if req.UserNonVisibleData != "" {
-		req.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(req.UserNonVisibleData))
+	if encodedReq.UserNonVisibleData != "" {
+		encodedReq.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserNonVisibleData))
 	}
 
 	output := &PhoneResponse{}
-	rsp, err := call(ctx, PhoneSignEndpoint, env, req, phoneResponseParser)
+	rsp, err := call(ctx, PhoneSignEndpoint, env, &encodedReq, phoneResponseParser)
 	if err == nil && rsp != nil {
 		output = rsp.(*PhoneResponse)
 	}
@@ -122,11 +135,12 @@ func call(ctx context.Context, endpoint string, env Environmenter, requestBody i
 
 func responseParser(rsp *http.Response) (interface{}, error) {
 	defer rsp.Body.Close()
+	limited := io.LimitReader(rsp.Body, maxResponseSize)
 
 	// OK
 	if rsp.StatusCode >= 200 && rsp.StatusCode < 400 {
 		authRsp := Response{}
-		err := json.NewDecoder(rsp.Body).Decode(&authRsp)
+		err := json.NewDecoder(limited).Decode(&authRsp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse successful response: %w", err)
 		}
@@ -136,24 +150,24 @@ func responseParser(rsp *http.Response) (interface{}, error) {
 	// Fail
 	if rsp.StatusCode >= 400 {
 		errRsp := ErrorResponse{}
-		err := json.NewDecoder(rsp.Body).Decode(&errRsp)
+		err := json.NewDecoder(limited).Decode(&errRsp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse error response: %w", err)
 		}
 		return nil, errRsp
 	}
 
-	// We don't care about HTTP 1xx messages
-	return nil, nil
+	return nil, fmt.Errorf("unexpected HTTP status: %d", rsp.StatusCode)
 }
 
 func phoneResponseParser(rsp *http.Response) (interface{}, error) {
 	defer rsp.Body.Close()
+	limited := io.LimitReader(rsp.Body, maxResponseSize)
 
 	// OK
 	if rsp.StatusCode >= 200 && rsp.StatusCode < 400 {
 		phoneRsp := PhoneResponse{}
-		err := json.NewDecoder(rsp.Body).Decode(&phoneRsp)
+		err := json.NewDecoder(limited).Decode(&phoneRsp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse successful response: %w", err)
 		}
@@ -163,24 +177,24 @@ func phoneResponseParser(rsp *http.Response) (interface{}, error) {
 	// Fail
 	if rsp.StatusCode >= 400 {
 		errRsp := ErrorResponse{}
-		err := json.NewDecoder(rsp.Body).Decode(&errRsp)
+		err := json.NewDecoder(limited).Decode(&errRsp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse error response: %w", err)
 		}
 		return nil, errRsp
 	}
 
-	// We don't care about HTTP 1xx messages
-	return nil, nil
+	return nil, fmt.Errorf("unexpected HTTP status: %d", rsp.StatusCode)
 }
 
 func collectParser(rsp *http.Response) (interface{}, error) {
 	defer rsp.Body.Close()
+	limited := io.LimitReader(rsp.Body, maxResponseSize)
 
 	// OK
 	if rsp.StatusCode >= 200 && rsp.StatusCode < 400 {
 		collectRsp := CollectResponse{}
-		err := json.NewDecoder(rsp.Body).Decode(&collectRsp)
+		err := json.NewDecoder(limited).Decode(&collectRsp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse successful response: %w", err)
 		}
@@ -190,14 +204,14 @@ func collectParser(rsp *http.Response) (interface{}, error) {
 	// Fail
 	if rsp.StatusCode >= 400 {
 		errRsp := ErrorResponse{}
-		err := json.NewDecoder(rsp.Body).Decode(&errRsp)
+		err := json.NewDecoder(limited).Decode(&errRsp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse error response: %w", err)
 		}
 		return nil, errRsp
 	}
-	// We don't care about HTTP 1xx messages
-	return nil, nil
+
+	return nil, fmt.Errorf("unexpected HTTP status: %d", rsp.StatusCode)
 }
 
 // IsErrorResponse checks if the given error is a BankID ErrorResponse
