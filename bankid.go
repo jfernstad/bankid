@@ -36,12 +36,23 @@ type environment struct {
 	baseURL      string
 	clientConfig *tls.Config
 	client       *http.Client
+	timeout      time.Duration
+}
+
+// ClientOption is a function that configures the environment client.
+type ClientOption func(*environment)
+
+// WithTimeout configures the HTTP client timeout.
+func WithTimeout(timeout time.Duration) ClientOption {
+	return func(e *environment) {
+		e.timeout = timeout
+	}
 }
 
 // NewEnvironment sets up the certificates and URLs needed to identify ourselves with the BankID service.
 // Certificate files are loaded from the provided file paths.
 // For loading certificates from memory (e.g. Vault, K8s secrets), use NewEnvironmentFromBytes.
-func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath string) (Environmenter, error) {
+func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath string, options ...ClientOption) (Environmenter, error) {
 	ca, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not load CA Certificate: %s", err.Error())
@@ -57,13 +68,13 @@ func NewEnvironment(baseURL string, caPath string, rpCertPath string, rpKeyPath 
 		return nil, fmt.Errorf("could not load RP Key: %s", err.Error())
 	}
 
-	return NewEnvironmentFromBytes(baseURL, ca, rpCert, rpKey)
+	return NewEnvironmentFromBytes(baseURL, ca, rpCert, rpKey, options...)
 }
 
 // NewEnvironmentFromBytes sets up the certificates and URLs needed to identify ourselves
 // with the BankID service, using raw PEM-encoded certificate bytes.
 // This is useful when loading certificates from environment variables, Vault, K8s secrets, etc.
-func NewEnvironmentFromBytes(baseURL string, ca []byte, rpCert []byte, rpKey []byte) (Environmenter, error) {
+func NewEnvironmentFromBytes(baseURL string, ca []byte, rpCert []byte, rpKey []byte, options ...ClientOption) (Environmenter, error) {
 	keyPair, err := tls.X509KeyPair(rpCert, rpKey)
 	if err != nil {
 		return nil, fmt.Errorf("could not load RP Keypair: %s", err.Error())
@@ -85,7 +96,13 @@ func NewEnvironmentFromBytes(baseURL string, ca []byte, rpCert []byte, rpKey []b
 	env := &environment{
 		baseURL:      baseURL,
 		clientConfig: &clientCfg,
+		timeout:      10 * time.Second, // Default timeout
 	}
+
+	for _, opt := range options {
+		opt(env)
+	}
+
 	env.client = env.newClient()
 	return env, nil
 }
@@ -125,6 +142,6 @@ func (e *environment) newClient() *http.Client {
 			TLSHandshakeTimeout: 5 * time.Second,
 			IdleConnTimeout:     90 * time.Second,
 		},
-		Timeout: 10 * time.Second,
+		Timeout: e.timeout,
 	}
 }
