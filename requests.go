@@ -20,8 +20,18 @@ const maxResponseSize = 1 << 20
 // The response contains an autoStartToken (for same-device flows) and
 // qrStartToken/qrStartSecret (for animated QR code flows on another device).
 func Auth(ctx context.Context, env Environmenter, req *AuthRequest) (*Response, error) {
+	encodedReq := *req
+
+	if encodedReq.UserVisibleData != "" {
+		encodedReq.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserVisibleData))
+	}
+
+	if encodedReq.UserNonVisibleData != "" {
+		encodedReq.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserNonVisibleData))
+	}
+
 	output := &Response{}
-	rsp, err := call(ctx, AuthEndpoint, env, req, responseParser)
+	rsp, err := call(ctx, AuthEndpoint, env, &encodedReq, responseParser)
 	if err == nil && rsp != nil {
 		output = rsp.(*Response)
 	}
@@ -58,8 +68,18 @@ func Sign(ctx context.Context, env Environmenter, req *SignRequest) (*Response, 
 // This is the only v6.0 flow that accepts a personal number directly,
 // as the customer service agent already knows who they are speaking to.
 func PhoneAuth(ctx context.Context, env Environmenter, req *PhoneAuthRequest) (*PhoneResponse, error) {
+	encodedReq := *req
+
+	if encodedReq.UserVisibleData != "" {
+		encodedReq.UserVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserVisibleData))
+	}
+
+	if encodedReq.UserNonVisibleData != "" {
+		encodedReq.UserNonVisibleData = base64.StdEncoding.EncodeToString([]byte(encodedReq.UserNonVisibleData))
+	}
+
 	output := &PhoneResponse{}
-	rsp, err := call(ctx, PhoneAuthEndpoint, env, req, phoneResponseParser)
+	rsp, err := call(ctx, PhoneAuthEndpoint, env, &encodedReq, phoneResponseParser)
 	if err == nil && rsp != nil {
 		output = rsp.(*PhoneResponse)
 	}
