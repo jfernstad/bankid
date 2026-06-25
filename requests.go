@@ -154,7 +154,7 @@ func call(ctx context.Context, endpoint string, env Environmenter, requestBody i
 }
 
 func responseParser(rsp *http.Response) (interface{}, error) {
-	defer rsp.Body.Close()
+	defer func() { _ = rsp.Body.Close() }()
 	limited := io.LimitReader(rsp.Body, maxResponseSize)
 
 	// OK
@@ -181,7 +181,7 @@ func responseParser(rsp *http.Response) (interface{}, error) {
 }
 
 func phoneResponseParser(rsp *http.Response) (interface{}, error) {
-	defer rsp.Body.Close()
+	defer func() { _ = rsp.Body.Close() }()
 	limited := io.LimitReader(rsp.Body, maxResponseSize)
 
 	// OK
@@ -208,7 +208,7 @@ func phoneResponseParser(rsp *http.Response) (interface{}, error) {
 }
 
 func collectParser(rsp *http.Response) (interface{}, error) {
-	defer rsp.Body.Close()
+	defer func() { _ = rsp.Body.Close() }()
 	limited := io.LimitReader(rsp.Body, maxResponseSize)
 
 	// OK

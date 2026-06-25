@@ -76,7 +76,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 					QRStartSecret:  "d28db9a7-4cde-429e-a983-359be676944c",
 				}
 				w.WriteHeader(200)
-				json.NewEncoder(w).Encode(&authRsp)
+				_ = json.NewEncoder(w).Encode(&authRsp)
 			},
 			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.Nil(t, err)
@@ -86,7 +86,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 		{
 			name: "Expected: Successful, w/ incorrect response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				w.Write(nil) // Empty and invalid
+				_, _ = w.Write(nil) // Empty and invalid
 			},
 			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
@@ -98,7 +98,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				errRsp := ErrorResponse{} // Empty but valid
 				w.WriteHeader(400)
-				json.NewEncoder(w).Encode(&errRsp)
+				_ = json.NewEncoder(w).Encode(&errRsp)
 			},
 			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
@@ -110,7 +110,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 			name: "Expected: Fail, w/ incorrect response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(400)
-				w.Write(nil) // Empty and invalid
+				_, _ = w.Write(nil) // Empty and invalid
 			},
 			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
@@ -122,7 +122,7 @@ func TestSignAuthCollect_v6(t *testing.T) {
 			name: "Expected: Fail, unexpected status codes return an error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(101)
-				w.Write(nil)
+				_, _ = w.Write(nil)
 			},
 			assert: func(t *testing.T, resp interface{}, err error) {
 				assert.NotNil(t, err)
@@ -176,7 +176,7 @@ func TestPhoneAuth_v6(t *testing.T) {
 			OrderRef: "131daac9-16c6-4618-beb0-365768f37288",
 		}
 		w.WriteHeader(200)
-		json.NewEncoder(w).Encode(&rsp)
+		_ = json.NewEncoder(w).Encode(&rsp)
 	}
 
 	resp, err := PhoneAuth(ctx, env, &PhoneAuthRequest{
@@ -199,7 +199,7 @@ func TestPhoneSign_v6(t *testing.T) {
 			OrderRef: "131daac9-16c6-4618-beb0-365768f37288",
 		}
 		w.WriteHeader(200)
-		json.NewEncoder(w).Encode(&rsp)
+		_ = json.NewEncoder(w).Encode(&rsp)
 	}
 
 	resp, err := PhoneSign(ctx, env, &PhoneSignRequest{
@@ -220,7 +220,7 @@ func TestCancel_v6(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				authRsp := Response{} // Empty but valid
 				w.WriteHeader(200)
-				json.NewEncoder(w).Encode(&authRsp)
+				_ = json.NewEncoder(w).Encode(&authRsp)
 			},
 			assert: func(t *testing.T, _ interface{}, err error) {
 				assert.Nil(t, err)
@@ -229,7 +229,7 @@ func TestCancel_v6(t *testing.T) {
 		{
 			name: "Expected: Successful, w/ incorrect response body",
 			handler: func(w http.ResponseWriter, r *http.Request) {
-				w.Write(nil) // Empty and invalid
+				_, _ = w.Write(nil) // Empty and invalid
 			},
 			assert: func(t *testing.T, _ interface{}, err error) {
 				assert.NotNil(t, err)
@@ -240,7 +240,7 @@ func TestCancel_v6(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				errRsp := ErrorResponse{} // Empty but valid
 				w.WriteHeader(400)
-				json.NewEncoder(w).Encode(&errRsp)
+				_ = json.NewEncoder(w).Encode(&errRsp)
 			},
 			assert: func(t *testing.T, _ interface{}, err error) {
 				assert.NotNil(t, err)
@@ -290,7 +290,7 @@ func TestCollectCompletion_v6(t *testing.T) {
 			},
 		}
 		w.WriteHeader(200)
-		json.NewEncoder(w).Encode(&rsp)
+		_ = json.NewEncoder(w).Encode(&rsp)
 	}
 
 	resp, err := Collect(ctx, env, "dbbee61c-357b-4fd8-b103-392eed10be7a")
@@ -318,7 +318,7 @@ func TestIsErrorResponse(t *testing.T) {
 			Details:   "An order is already in progress",
 		}
 		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(&errRsp)
+		_ = json.NewEncoder(w).Encode(&errRsp)
 	}
 
 	_, err := Auth(ctx, env, &AuthRequest{EndUserIP: "127.0.0.1"})
